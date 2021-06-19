@@ -8,70 +8,6 @@
 #define STATE_FED 3
 #define STATE_CHAMBERED 4
 #define STATE_FIRING 5
-
-/obj/item/ship_weapon/ammunition
-	var/projectile_type = null //What does the projectile look like on the overmap?
-	var/volatility = 0 //Is this ammo likely to go up in flames when hit or burned?
-	var/explode_when_hit = FALSE //If the ammo's volatile, can it be detonated by damage? Or just burning it.
-	var/climb_time = 20 //Time it takes to climb
-	var/climb_stun = 20 //Time to be stunned for after climbing
-	var/climbable = FALSE //Can you climb on it?
-	var/mob/living/climber //Who is climbing on it
-
-/obj/item/ship_weapon/ammunition/Initialize()
-	. = ..()
-	if(volatility > 0)
-		AddComponent(/datum/component/volatile, volatility, explode_when_hit)
-
-/obj/item/ship_weapon/ammunition/MouseDrop_T(atom/movable/O, mob/user)
-	. = ..()
-	if(!climbable)
-		return
-	if(user == O && iscarbon(O))
-		var/mob/living/carbon/C = O
-		if(C.mobility_flags & MOBILITY_MOVE)
-			climb_torp(user)
-			return
-	if(!istype(O, /obj/item) || user.get_active_held_item() != O)
-		return
-	if(iscyborg(user))
-		return
-	if(!user.dropItemToGround(O))
-		return
-	if (O.loc != src.loc)
-		step(O, get_dir(O, src))
-
-/obj/item/ship_weapon/ammunition/proc/do_climb(atom/movable/A)
-	if(climbable)
-		density = FALSE
-		. = step(A,get_dir(A,src.loc))
-		density = TRUE
-
-/obj/item/ship_weapon/ammunition/proc/climb_torp(mob/living/user)
-	src.add_fingerprint(user)
-	user.visible_message("<span class='warning'>[user] starts climbing onto [src].</span>", \
-								"<span class='notice'>You start climbing onto [src]...</span>")
-	var/adjusted_climb_time = climb_time
-	if(user.restrained()) //climbing takes twice as long when restrained.
-		adjusted_climb_time *= 2
-	if(isalien(user))
-		adjusted_climb_time *= 0.25 //aliens are terrifyingly fast
-	if(HAS_TRAIT(user, TRAIT_FREERUNNING)) //do you have any idea how fast I am???
-		adjusted_climb_time *= 0.8
-	climber = user
-	if(do_mob(user, user, adjusted_climb_time))
-		if(src.loc) //Checking if structure has been destroyed
-			if(do_climb(user))
-				user.visible_message("<span class='warning'>[user] climbs onto [src].</span>", \
-									"<span class='notice'>You climb onto [src].</span>")
-				log_combat(user, src, "climbed onto")
-				if(climb_stun)
-					user.Stun(climb_stun)
-				. = 1
-			else
-				to_chat(user, "<span class='warning'>You fail to climb onto [src].</span>")
-	climber = null
-
 /**
  * Ship-to-ship weapons
  * To add a weapon type:
@@ -202,6 +138,11 @@
 /obj/machinery/ship_weapon/attackby(obj/item/I, mob/user)
 	if(!linked)
 		get_ship()
+	if(islist(ammo_type))
+		for(var/at in ammo_type)
+			if(istype(I, at))
+				load(I, user)
+				return TRUE
 
 	if(ammo_type && istype(I, ammo_type))
 		load(I, user)
@@ -212,7 +153,7 @@
 	else if(istype(I, /obj/item/reagent_containers))
 		oil(I, user)
 		return TRUE
-	..()
+	return ..()
 
 /**
  * Store ID in multitool buffer for linking to munitions consoles
@@ -240,6 +181,11 @@
  */
 /obj/machinery/ship_weapon/MouseDrop_T(obj/item/A, mob/user)
 	. = ..()
+	if(islist(ammo_type))
+		for(var/at in ammo_type)
+			if(istype(A, at))
+				load(A, user)
+				return TRUE
 	if(ammo_type && istype(A, ammo_type))
 		load(A, user)
 
@@ -250,44 +196,35 @@
  * Returns true if loaded successfully, false otherwise.
  */
 /obj/machinery/ship_weapon/proc/load(obj/A, mob/user)
-	if(ammo_type && istype(A, ammo_type))
-		if(ammo?.len < max_ammo) //Room for one more?
-			if(!loading) //Not already loading a round?
-				if(user)
-					to_chat(user, "<span class='notice'>You start to load [A] into [src]...</span>")
-				loading = TRUE
-
-				if(!user || do_after(user, load_delay, target = src))
-					if(!isturf(A.loc) && !ismob(A.loc)) //Fix double-loading torpedos
-						if(user)
-							loading = FALSE
-							to_chat(user, "<span class='warning'>The ammunition has to be next to the weapon!</span>")
-						return FALSE
-					loading = FALSE
-					A.forceMove(src)
-					ammo += A
-					if(load_sound)
-						playsound(src, load_sound, 100, 1)
-					state = STATE_LOADED
+	if(ammo?.len < max_ammo) //Room for one more?
+		if(!loading) //Not already loading a round?
+			if(user)
+				to_chat(user, "<span class='notice'>You start to load [A] into [src]...</span>")
+			loading = TRUE
+			if(!user || do_after(user, load_delay, target = src))
+				if(!isturf(A.loc) && !ismob(A.loc)) //Fix double-loading torpedos
 					if(user)
-						to_chat(user, "<span class='notice'>You load [A] into [src].</span>")
-
-					if(auto_load) //If we're automatic, get ready to fire
-						feed()
-						chamber()
-					loading = FALSE
-					return TRUE
-				//end if(!user || do_after(user, load_delay, target = src))
+						loading = FALSE
+						to_chat(user, "<span class='warning'>The ammunition has to be next to the weapon!</span>")
+					return FALSE
 				loading = FALSE
-			//end if(!loading)
-			else if(user)
-				to_chat(user, "<span class='notice'>You're already loading a round into [src]!.</span>")
-		//end if(ammo?.len < max_ammo)
+				A.forceMove(src)
+				ammo += A
+				if(load_sound)
+					playsound(src, load_sound, 100, 1)
+				state = STATE_LOADED
+				if(user)
+					to_chat(user, "<span class='notice'>You load [A] into [src].</span>")
+				if(auto_load) //If we're automatic, get ready to fire
+					feed()
+					chamber()
+				loading = FALSE
+				return TRUE
+			loading = FALSE
 		else if(user)
-			to_chat(user, "<span class='warning'>[src] is already fully loaded!</span>")
-	//end if(ammo_type && istype(I, ammo_type))
+			to_chat(user, "<span class='notice'>You're already loading a round into [src]!.</span>")
 	else if(user)
-		to_chat(user, "<span class='warning'>You can't load [A] into [src]!</span>")
+		to_chat(user, "<span class='warning'>[src] is already fully loaded!</span>")
 
 	return FALSE
 
@@ -430,8 +367,9 @@
 		magazine = new magazine_type(src)
 		ammo = magazine.stored_ammo //Lets us handle magazines and single rounds the same way
 	else
+		var/ammoType = (islist(ammo_type)) ? ammo_type[1] : ammo_type
 		for(var/I = 0; I < max_ammo; I++)
-			var/atom/BB = new ammo_type(src)
+			var/atom/BB = new ammoType(src)
 			ammo += BB
 	safety = FALSE
 	chambered = ammo[1]
@@ -561,7 +499,7 @@
  * Animates an overmap projectile matching whatever we're shooting.
  */
 /obj/machinery/ship_weapon/proc/animate_projectile(atom/target)
-	linked.fire_lateral_projectile(weapon_type.default_projectile_type, target)
+	return linked.fire_projectile(weapon_type.default_projectile_type, target, lateral=weapon_type.lateral)
 
 /**
  * Updates maintenance counter after firing if applicable.
@@ -590,9 +528,3 @@
 #undef MSTATE_UNSCREWED
 #undef MSTATE_UNBOLTED
 #undef MSTATE_PRIEDOUT
-
-#undef STATE_NOTLOADED
-#undef STATE_LOADED
-#undef STATE_FED
-#undef STATE_CHAMBERED
-#undef STATE_FIRING

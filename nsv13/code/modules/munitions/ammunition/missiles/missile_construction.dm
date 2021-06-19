@@ -6,6 +6,7 @@
 	desc = "The outer casing of a 30mm missile."
 	density = TRUE
 	move_resist = MOVE_FORCE_EXTREMELY_STRONG
+	claimable_gulag_points = 0
 	var/state = 0
 	var/obj/item/ship_weapon/parts/missile/warhead/wh = null
 	var/obj/item/ship_weapon/parts/missile/guidance_system/gs = null
@@ -214,6 +215,7 @@
 			to_chat(user, "<span class='notice'>You start sealing the casing on [src]...</span>")
 			if(tool.use_tool(src, user, 40, amount=1, volume=100))
 				to_chat(user, "<span class='notice'You seal the casing on [src].</span>")
+				state = 11
 				check_completion()
 			return TRUE
 	. = ..()

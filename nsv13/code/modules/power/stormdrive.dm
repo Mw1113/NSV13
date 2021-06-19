@@ -158,7 +158,7 @@ Control Rods
 	engineering_channel = "Syndicate"
 
 /obj/machinery/atmospherics/components/binary/stormdrive_reactor/solgov
-	name = "Class V ionic storm drive"
+	name = "class V ionic storm drive"
 	desc = "A highly advanced ionic drive used by SolGov to power their space vessels. Through the application of inverse-ions to the endostorm, more efficient matter to energy conversion is achieved."
 	base_power = 85000 //26% more power than class 4
 	icon = 'nsv13/goonstation/icons/reactor_solgov.dmi'
@@ -328,10 +328,10 @@ Control Rods
 		return
 	ui_interact(user)
 
-/obj/machinery/atmospherics/components/binary/stormdrive_reactor/ui_interact(mob/user, ui_key = "main", datum/tgui/ui = null, force_open = 0, datum/tgui/master_ui = null, datum/ui_state/state = GLOB.default_state) // Remember to use the appropriate state.
-	ui = SStgui.try_update_ui(user, src, ui_key, ui, force_open)
+/obj/machinery/atmospherics/components/binary/stormdrive_reactor/ui_interact(mob/user, datum/tgui/ui)
+	ui = SStgui.try_update_ui(user, src, ui)
 	if(!ui)
-		ui = new(user, src, ui_key, "StormdriveControlRods", name, 560, 600, master_ui, state)
+		ui = new(user, src, "StormdriveControlRods")
 		ui.open()
 
 /obj/machinery/atmospherics/components/binary/stormdrive_reactor/ui_act(action, params, datum/tgui/ui)
@@ -455,7 +455,7 @@ Control Rods
 		state = REACTOR_STATE_IDLE //Force reactor restart.
 	set_light(0)
 	var/area/AR = get_area(src)
-	AR.looping_ambience = 'nsv13/sound/ambience/shipambience.ogg'
+	AR.ambient_buzz = 'nsv13/sound/ambience/shipambience.ogg'
 
 /obj/machinery/atmospherics/components/binary/stormdrive_reactor/Initialize()
 	. = ..()
@@ -506,7 +506,7 @@ Control Rods
 		playsound(loc, startup_sound, 100)
 		send_alert("Fission reaction initiated. Reactor now on-line.", override=TRUE)
 		var/area/AR = get_area(src)
-		AR.looping_ambience = 'nsv13/sound/ambience/engineering.ogg'
+		AR.ambient_buzz = 'nsv13/sound/ambience/engineering.ogg'
 		if(reaction_rate <= 0)
 			reaction_rate = 5
 		return TRUE
@@ -719,7 +719,8 @@ Control Rods
 	target_heat = (-1)+2**(0.1*((100-control_rod_percent) * control_rod_modifier)) //Let there be math
 	if(heat > target_heat+((cooling_power * cooling_power_modifier)-heat_gain)) //If it's hotter than the desired temperature, + our cooling power, we need to cool it off.
 		if(can_cool())
-			heat -= cooling_power * cooling_power_modifier
+			if(control_rod_percent > 0)
+				heat -= cooling_power * cooling_power_modifier
 
 /obj/machinery/atmospherics/components/binary/stormdrive_reactor/proc/handle_reaction_rate()
 	target_reaction_rate = (0.5+(1e-03*((100-control_rod_percent) * control_rod_modifier)**2) * reaction_rate_modifier) + 1e-05*(heat**2)  //let the train derail!
@@ -893,12 +894,12 @@ Control Rods
 	if(reactor_stability < 75)
 		if(prob((100 - reactor_stability) / 4)) //Destabilize the balance a little
 			if(prob(50))
-				heat += reaction_rate * rand(3,5)
+				heat += reaction_rate * rand(5,8)
 			else
-				reaction_rate += reaction_rate / rand(1,3)
+				reaction_rate += reaction_rate / rand(3,5)
 
 	if(reactor_stability < 15)
-		if(prob(0.00001))
+		if(prob(1))
 			if(prob(50))
 				new /obj/effect/anomaly/stormdrive/surge(src, rand(2000, 5000))
 			else
@@ -971,6 +972,8 @@ Control Rods
 					else
 						L.flicker()
 			if(prob(0.01))
+				for(var/obj/machinery/power/grounding_rod/R in orange(5, src))
+					R.take_damage(rand(25, 50))
 				tesla_zap(src, 5, 1000)
 		if(10000000 to INFINITY) //10MW+
 			if(prob(1))
@@ -981,6 +984,8 @@ Control Rods
 				for(var/obj/machinery/light/L in orange(12, src))
 					L.burn_out() //If there are even any left by this stage
 			if(prob(0.1))
+				for(var/obj/machinery/power/grounding_rod/R in orange(8, src))
+					R.take_damage(rand(25, 75))
 				tesla_zap(src, 8, 2000)
 
 /obj/machinery/atmospherics/components/binary/stormdrive_reactor/update_icon() //include overlays for radiation output levels and power output levels (ALSO 1k+ levels)
@@ -1045,12 +1050,13 @@ Control Rods
 	. = ..()
 	if(icon_state == "broken")
 		. += "<span class='notice'>The reactor pit is full of plutonium sludge.</span>"
-	if(state == REACTOR_STATE_REPAIR)
-		. += "<span class='notice'>The duranium lining of the reactor pit is severly degraded.</span>"
-	if(state == REACTOR_STATE_REINFORCE)
-		. += "<span class='notice'>The lining requires reinforcing and welding in place.</span>"
-	if(state == REACTOR_STATE_REFIT)
-		. += "<span class='notice'>It is missing a reactor core.</span>"
+	switch(state)
+		if(REACTOR_STATE_REPAIR)
+			. += "<span class='notice'>The duranium lining of the reactor pit is severly degraded.</span>"
+		if(REACTOR_STATE_REINFORCE)
+			. += "<span class='notice'>The lining requires reinforcing and welding in place.</span>"
+		if(REACTOR_STATE_REFIT)
+			. += "<span class='notice'>It is missing a reactor core.</span>"
 
 /obj/effect/countdown/stormdrive
 	name = "stormdrive stability"
@@ -1140,7 +1146,7 @@ Control Rods
 				if(WS.range < 10) //small spawner
 					empulse(epi, 5, 15)
 					radiation_pulse(epi, 100)
-					if(prob(15))
+					if(prob(35))
 						if(prob(50))
 							new /obj/effect/anomaly/stormdrive/surge(epi, rand(2000, 5000))
 						else
@@ -1209,11 +1215,10 @@ Control Rods
 	ui_interact(user)
 
 /obj/machinery/computer/ship/reactor_control_computer/attack_ghost(mob/user)
-	. = ..()
 	if(!reactor)
 		to_chat(user, "<span class='warning'>Unable to detect linked reactor</span>")
 		return
-	ui_interact(user)
+	. = ..() //parent should call ui_interact
 
 /obj/machinery/computer/ship/reactor_control_computer/Initialize()
 	. = ..()
@@ -1275,10 +1280,10 @@ Control Rods
 		if("pipe") //change my words
 			reactor.dumping_fuel = !reactor.dumping_fuel
 
-/obj/machinery/computer/ship/reactor_control_computer/ui_interact(mob/user, ui_key = "main", datum/tgui/ui = null, force_open = 0, datum/tgui/master_ui = null, datum/ui_state/state = GLOB.default_state) // Remember to use the appropriate state.
-	ui = SStgui.try_update_ui(user, src, ui_key, ui, force_open)
+/obj/machinery/computer/ship/reactor_control_computer/ui_interact(mob/user, datum/tgui/ui)
+	ui = SStgui.try_update_ui(user, src, ui)
 	if(!ui)
-		ui = new(user, src, ui_key, "StormdriveConsole", name, 560, 600, master_ui, state)
+		ui = new(user, src, "StormdriveConsole")
 		ui.open()
 
 /obj/machinery/computer/ship/reactor_control_computer/ui_data(mob/user)
@@ -1489,14 +1494,14 @@ Control Rods
 /obj/machinery/portable_atmospherics/canister/nucleium
 	name = "nucleium canister"
 	desc = "A waste plasma biproduct produced in the Stormdrive, used in quantum waveform generation."
-	icon_state = "orange"
+	icon_state = "miasma"
 	gas_type = /datum/gas/nucleium
 
 
 /////// NUCLEAR WASTE////////
 
 /obj/effect/decal/nuclear_waste
-	name = "Plutonium sludge"
+	name = "plutonium sludge"
 	desc = "A writhing pool of heavily irradiated, spent reactor fuel. You probably shouldn't step through this..."
 	icon = 'nsv13/icons/obj/machinery/reactor_parts.dmi'
 	icon_state = "nuclearwaste"
@@ -1509,10 +1514,10 @@ Control Rods
 	set_light(3)
 
 /obj/effect/decal/nuclear_waste/epicenter //The one that actually does the irradiating. This is to avoid every bit of sludge PROCESSING
-	name = "Dense nuclear sludge"
+	name = "dense nuclear sludge"
 
 /obj/effect/landmark/nuclear_waste_spawner //Clean way of spawning nuclear gunk after a reactor core meltdown.
-	name = "Nuclear waste spawner"
+	name = "nuclear waste spawner"
 	var/range = 5 //5 tile radius to spawn goop
 
 /obj/effect/landmark/nuclear_waste_spawner/strong
@@ -1598,7 +1603,7 @@ Control Rods
 /////// ANOMALIES ///////
 
 /obj/effect/anomaly/stormdrive //PARENT
-	name = "Stormdrive Anomaly - PARENT "
+	name = "\improper Stormdrive Anomaly - PARENT "
 	desc = "A mysterious anomaly, unknown in origin."
 	var/freq_shift = null
 	var/code_shift = null
@@ -1632,11 +1637,11 @@ Control Rods
 	else
 		radiation_pulse(src, 125)
 		var/turf/open/L = get_turf(src)
-		if(!istype(L) || !(L.air))
+		if(!istype(L) || !L.air)
 			return
 		var/datum/gas_mixture/env = L.return_air()
 		var/temperature = env.return_temperature() + 25 //Not super spicy
-		src.atmos_spawn_air("nucleium=15;TEMP=[temperature]")
+		atmos_spawn_air("nucleium=15;TEMP=[temperature]")
 
 /obj/effect/anomaly/stormdrive/sheer/Crossed(mob/living/M)
 	radiation_pulse(src, 125)
@@ -1706,14 +1711,14 @@ Control Rods
 //////// MISC ///////
 
 /obj/item/book/manual/wiki/stormdrive
-	name = "Stormdrive Class IV SOP"
+	name = "\improper Stormdrive Class IV SOP"
 	icon_state ="bookEngineering2"
 	author = "CogWerk Engineering Reactor Design Department"
 	title = "Stormdrive Class IV SOP"
 	page_link = "Guide_to_the_Stormdrive_Engine"
 
 /obj/item/stormdrive_core
-	name = "Class IV Nuclear Storm Drive Reactor Core"
+	name = "\improper Class IV Nuclear Storm Drive Reactor Core"
 	desc = "This crate contains a live reactor core for a class IV nuclear storm drive."
 	icon = 'icons/obj/crates.dmi'
 	icon_state = "crate"
@@ -1736,8 +1741,6 @@ Control Rods
 	network_destination = "storm drive monitoring system"
 	size = 2
 	tgui_id = "NtosStormdriveMonitor"
-	ui_x = 350
-	ui_y = 450
 	var/active = TRUE //Easy process throttle
 	var/obj/machinery/atmospherics/components/binary/stormdrive_reactor/reactor //Our reactor.
 

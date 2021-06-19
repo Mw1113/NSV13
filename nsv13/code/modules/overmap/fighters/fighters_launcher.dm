@@ -1,9 +1,7 @@
-
 /obj/machinery/computer/ship/fighter_launcher
-	name = "Mag-cat control console"
+	name = "\improper Mag-cat control console"
 	desc = "A computer which is capable of remotely activating fighter launch / arrestor systems."
-	req_access = list()
-	req_one_access_txt = "69"
+	circuit = /obj/item/circuitboard/computer/ship/fighter_launcher
 	var/next_message = 0 //Stops spam messaging
 	var/list/launchers = list()
 
@@ -16,12 +14,11 @@
 		if(FT.can_launch_fighters())
 			launchers += FT
 
-
-/obj/machinery/computer/ship/fighter_launcher/ui_interact(mob/user, ui_key = "main", datum/tgui/ui = null, force_open = 0, datum/tgui/master_ui = null, datum/ui_state/state = GLOB.default_state) // Remember to use the appropriate state.
+/obj/machinery/computer/ship/fighter_launcher/ui_interact(mob/user, datum/tgui/ui)
 	get_launchers()
-	ui = SStgui.try_update_ui(user, src, ui_key, ui, force_open)
+	ui = SStgui.try_update_ui(user, src, ui)
 	if(!ui)
-		ui = new(user, src, ui_key, "FighterLauncher", name, 500, 600, master_ui, state)
+		ui = new(user, src, "FighterLauncher")
 		ui.open()
 
 /obj/machinery/computer/ship/fighter_launcher/ui_data(mob/user)
@@ -66,17 +63,9 @@
 			what = "<span class='boldnotice'>Air Traffic Controller: [what]</span>"
 			to_chat(pilot, what)
 
-/obj/machinery/computer/ship/fighter_launcher/attack_hand(mob/user)
-	if(!allowed(user))
-		var/sound = pick('nsv13/sound/effects/computer/error.ogg','nsv13/sound/effects/computer/error2.ogg','nsv13/sound/effects/computer/error3.ogg')
-		playsound(src, sound, 100, 1)
-		to_chat(user, "<span class='warning'>Access denied</span>")
-		return
-	ui_interact(user)
-
 /obj/structure/fighter_launcher //Fighter launch track! This is both an arrestor and an assisted launch system for ease of use.
 	name = "electromagnetic catapult"
-	desc = "A large rail which uses a electromagnetic technology to accelerate fighters to extreme speeds. This state of the art piece of machinery acts as both an arrestor and an assisted fighter launch system."
+	desc = "A large rail which uses an electromagnetic field to accelerate fighters to extreme speeds. This state of the art piece of machinery acts as both an arrestor and an assisted fighter launch system."
 	icon = 'nsv13/icons/overmap/nanotrasen/fighter.dmi'
 	icon_state = "launcher_map" //Icon to show which way theyre pointing
 	bound_width = 96
@@ -274,15 +263,29 @@
 		var/obj/item/fighter_component/docking_computer/DC = loadout.get_slot(HARDPOINT_SLOT_DOCKING)
 		DC.docking_cooldown = TRUE
 		addtimer(VARSET_CALLBACK(DC, docking_cooldown, FALSE), 5 SECONDS) //Prevents jank.
-		resize = 1 //Scale down!
-		pixel_w = -30
-		pixel_z = -32
+		resize = resize_factor //Scale down!
+		pixel_w = flight_pixel_w
+		pixel_z = flight_pixel_z
 		bound_width = 32
 		bound_height = 32
 		if(pilot)
 			to_chat(pilot, "<span class='notice'>Docking mode disabled. Use the 'Ship' verbs tab to re-enable docking mode, then fly into an allied ship to complete docking proceedures.</span>")
 			DC.docking_mode = FALSE
 		SEND_SIGNAL(src, COMSIG_FTL_STATE_CHANGE) //Let dradis comps update their status too
+		current_system = OM.current_system
+		//Add a treadmill for this ship as and when needed.
+		if(!reserved_z && ftl_drive)
+			if(!free_treadmills?.len)
+				SSmapping.add_new_zlevel("Dropship overmap treadmill [++world.maxz]", ZTRAITS_OVERMAP)
+				reserved_z = world.maxz
+			else
+				var/_z = pick_n_take(free_treadmills)
+				reserved_z = _z
+			starting_system = current_system.name //Just fuck off it works alright?
+			SSstar_system.add_ship(src)
+
+		if(current_system && !LAZYFIND(current_system.system_contents, src))
+			LAZYADD(current_system.system_contents, src)
 		return TRUE
 
 /obj/structure/overmap/fighter/proc/update_overmap()
@@ -296,26 +299,28 @@
 
 /obj/structure/overmap/fighter/proc/transfer_from_overmap(obj/structure/overmap/OM)
 	var/obj/item/fighter_component/docking_computer/DC = loadout.get_slot(HARDPOINT_SLOT_DOCKING)
-	if(!DC || DC.docking_cooldown ||!DC.docking_mode|| !OM.occupying_levels?.len)
+	if(!DC || DC.docking_cooldown ||!DC.docking_mode|| !OM.docking_points?.len)
 		return FALSE
-	if(OM.docking_points?.len)
-		enemies = list() //Reset RWR warning.
-		last_overmap = OM
-		DC.docking_cooldown = TRUE
-		addtimer(VARSET_CALLBACK(DC, docking_cooldown, FALSE), 5 SECONDS) //Prevents jank.
-		resize = 0 //Scale up!
-		pixel_w = initial(pixel_w)
-		pixel_z = initial(pixel_z)
-		var/turf/T = get_turf(pick(OM.docking_points))
-		forceMove(T)
-		bound_width = initial(bound_width)
-		bound_height = initial(bound_height)
-		DC.docking_mode = FALSE
-		if(pilot && faction == OM.faction)
-			weapon_safety = TRUE
-			to_chat(pilot, "<span class='notice'>Docking complete. <b>Gun safeties have been engaged automatically.</b></span>")
-		SEND_SIGNAL(src, COMSIG_FTL_STATE_CHANGE)
-		return TRUE
-	else
-		to_chat(pilot, "<span class='notice'>Warning: Target ship has no docking points. </span>")
-	return FALSE
+	enemies = list() //Reset RWR warning.
+	last_overmap = OM
+	DC.docking_cooldown = TRUE
+	addtimer(VARSET_CALLBACK(DC, docking_cooldown, FALSE), 20 SECONDS) //Prevents jank.
+	resize = 0 //Scale up!
+	pixel_w = initial(pixel_w)
+	pixel_z = initial(pixel_z)
+	var/turf/T = get_turf(pick(OM.docking_points))
+	forceMove(T)
+	bound_width = initial(bound_width)
+	bound_height = initial(bound_height)
+	DC.docking_mode = FALSE
+	if(pilot && faction == OM.faction)
+		weapon_safety = TRUE
+		to_chat(pilot, "<span class='notice'>Docking complete. <b>Gun safeties have been engaged automatically.</b></span>")
+	SEND_SIGNAL(src, COMSIG_FTL_STATE_CHANGE)
+	if(current_system && LAZYFIND(current_system.system_contents, src))
+		current_system.system_contents -= src
+		current_system = null
+	if(reserved_z)
+		free_treadmills += reserved_z
+		reserved_z = null
+	return TRUE

@@ -39,6 +39,7 @@
 	max_integrity = 300 //Max internal integrity
 	integrity_failure = 0
 	var/armour_plates = 0 //You lose max integrity when you lose armour plates.
+	var/sensor_profile = 0	//A penalty (or, possibly even bonus) to from how far away one can be detected. Affected by things like sending out a active ping, which will make you glow like a christmas tree.
 	var/max_armour_plates = 0
 	var/list/dent_decals = list() //Ships get visibly damaged as they get shot
 	var/damage_states = FALSE //Did you sprite damage states for this ship? If yes, set this to true
@@ -63,7 +64,7 @@
 	var/desired_angle = null // set by pilot moving his mouse
 	var/angular_velocity = 0 // degrees per second
 	var/max_angular_acceleration = 180 // in degrees per second per second
-	var/speed_limit = 2.5 //Stops ships from going too damn fast. This can be overridden by things like fighters launching from tubes, so it's not a const.
+	var/speed_limit = 3.5 //Stops ships from going too damn fast. This can be overridden by things like fighters launching from tubes, so it's not a const.
 	var/last_thrust_forward = 0
 	var/last_thrust_right = 0
 	var/last_rotate = 0
@@ -134,6 +135,8 @@
 	var/mob/listeningTo
 
 	var/uid = 0 //Unique identification code
+	var/static/list/free_treadmills = list()
+	var/static/list/free_boarding_levels = list()
 	var/starting_system = null //Where do we start in the world?
 	var/obj/machinery/computer/ship/ftl_computer/ftl_drive
 	var/reserved_z = 0 //The Z level we were spawned on, and thus inhabit. This can be changed if we "swap" positions with another ship.
@@ -146,8 +149,18 @@
 
 	var/list/missions = list()
 
-	var/last_sonar_pulse = 0
+	var/last_radar_pulse = 0
 
+	//NPC combat
+	var/datum/combat_dice/npc_combat_dice
+	var/combat_dice_type = /datum/combat_dice
+
+	//Boarding
+	var/datum/turf_reservation/roomReservation = null
+	var/datum/map_template/dropship/boarding_interior = null
+	var/list/possible_interior_maps = null
+	var/interior_mode = NO_INTERIOR
+	var/list/interior_entry_points = list()
 /**
 Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 @return OM, a newly spawned overmap sitting on its treadmill as it ought to be.
@@ -160,6 +173,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 		_path = /obj/structure/overmap/nanotrasen/heavy_cruiser/starter
 	RETURN_TYPE(/obj/structure/overmap)
 	SSmapping.add_new_zlevel("Overmap ship level [++world.maxz]", ZTRAITS_OVERMAP)
+
 	repopulate_sorted_areas()
 	smooth_zlevel(world.maxz)
 	log_game("Z-level [world.maxz] loaded for overmap treadmills.")
@@ -197,6 +211,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 		if(midround)
 			overmap_lighting_force(OM)
 	}
+
 	return OM
 
 /obj/weapon_overlay
@@ -224,8 +239,33 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 /obj/weapon_overlay/laser/do_animation()
 	flick("laser",src)
 
-/obj/structure/overmap/Initialize()
+/obj/structure/overmap/Initialize()	//If I see one more Destroy() or Initialize() split into multiple files I'm going to lose my mind.
 	. = ..()
+	var/icon/I = icon(icon,icon_state,SOUTH) //SOUTH because all overmaps only ever face right, no other dirs.
+	pixel_collision_size_x = I.Width()
+	pixel_collision_size_y = I.Height()
+	offset = new /datum/vector2d()
+	last_offset = new /datum/vector2d()
+	position = new /datum/vector2d(x*32,y*32)
+	velocity = new /datum/vector2d(0, 0)
+	overlap = new /datum/vector2d(0, 0)
+	if(collision_positions.len)
+		physics2d = AddComponent(/datum/component/physics2d)
+		physics2d.setup(collision_positions, angle)
+
+	for(var/atype in subtypesof(/datum/ams_mode))
+		ams_modes.Add(new atype)
+
+	if(obj_integrity != max_integrity)
+		message_admins("Failsafe triggered: [src] Initialized with integrity of [obj_integrity], but max integrity of [max_integrity]. Setting integrity to max integrity to prevent issues.")
+		obj_integrity = max_integrity	//Failsafe
+
+	if(!combat_dice_type)
+		message_admins("[src] didn't get any combat dice! This may lead to problems in npc fleet combat and shouldn't happen.")
+	else
+		npc_combat_dice = new combat_dice_type()
+
+
 	return INITIALIZE_HINT_LATELOAD
 
 /obj/structure/overmap/LateInitialize()
@@ -248,7 +288,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 	update_icon()
 	find_area()
 	//If we're larger than a fighter and don't have our armour preset, set it now.
-	if(mass > MASS_TINY && !use_armour_quadrants)
+	if(mass > MASS_TINY && !use_armour_quadrants && role != MAIN_MINING_SHIP)
 		use_armour_quadrants = TRUE
 		//AI ships get weaker armour to allow you to kill them more easily.
 		var/armour_efficiency = (role > NORMAL_OVERMAP) ? obj_integrity / 2 : obj_integrity / 4
@@ -265,56 +305,85 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 			cabin_air = new
 			cabin_air.set_temperature(T20C)
 			cabin_air.set_volume(200)
-			cabin_air.set_moles(/datum/gas/oxygen, O2STANDARD*cabin_air.return_volume()/(R_IDEAL_GAS_EQUATION*cabin_air.return_temperature()))
-			cabin_air.set_moles(/datum/gas/nitrogen, N2STANDARD*cabin_air.return_volume()/(R_IDEAL_GAS_EQUATION*cabin_air.return_temperature()))
+			//101 kPa =
+			// PV=nRT
+			// PV/RT = n
+			cabin_air.set_moles(/datum/gas/oxygen, O2STANDARD*cabin_air.return_volume()*ONE_ATMOSPHERE/(R_IDEAL_GAS_EQUATION*cabin_air.return_temperature()))
+			cabin_air.set_moles(/datum/gas/nitrogen, N2STANDARD*cabin_air.return_volume()*ONE_ATMOSPHERE/(R_IDEAL_GAS_EQUATION*cabin_air.return_temperature()))
+			bounce_factor = 1 //Stops dead in its tracks
+			lateral_bounce_factor = 1
 			move_by_mouse = TRUE //You'll want this. Trust.
 			inertial_dampeners = FALSE
 
+		//Very easy to kite. Super balanced movement. Strong thrusters on all sides...
 		if(MASS_SMALL)
-			forward_maxthrust = 0.5
-			backward_maxthrust = 0.5
-			side_maxthrust = 0.5
-			max_angular_acceleration = 7
-			bounce_factor = 0.4
-			lateral_bounce_factor = 0.4
-
+			forward_maxthrust = 0.75
+			backward_maxthrust = 0.75
+			side_maxthrust = 0.75
+			max_angular_acceleration = 12
+			bounce_factor = 0.75
+			lateral_bounce_factor = 0.75
+		//Similar to small, but you'll notice a detriment to movement here. Movement is no longer equally balanced, you'll have to fight the controls more.
 		if(MASS_MEDIUM)
-			forward_maxthrust = 0.35
-			backward_maxthrust = 0.35
+			forward_maxthrust = 0.75
+			backward_maxthrust = 0.5
+			side_maxthrust = 0.45
+			max_angular_acceleration = 10
+			bounce_factor = 0.55 //Throw your weight around more, though!
+			lateral_bounce_factor = 0.55
+
+		if(MASS_MEDIUM_LARGE)
+			forward_maxthrust = 0.65
+			backward_maxthrust = 0.45
 			side_maxthrust = 0.35
-			max_angular_acceleration = 5
-			bounce_factor = 0.5
-			lateral_bounce_factor = 0.8
+			max_angular_acceleration = 7.5
+			bounce_factor = 0.40 //Throw your weight around more, though!
+			lateral_bounce_factor = 0.40
 
+		//Weightey ships, much harder to steer, generally less responsive. You'll need to use boost tactically.
 		if(MASS_LARGE)
-			forward_maxthrust = 0.1
-			backward_maxthrust = 0.1
-			side_maxthrust = 0.1
-			max_angular_acceleration = 2.5
-			bounce_factor = 0.45
-			lateral_bounce_factor = 0.8
-			flak_battery_amount = 0
-
+			forward_maxthrust = 0.45
+			backward_maxthrust = 0.3
+			side_maxthrust = 0.25
+			max_angular_acceleration = 5.5
+			bounce_factor = 0.20 //But you can plow through enemy ships with ease.
+			lateral_bounce_factor = 0.20
+			//If we've not already got a special flak battery amount set.
+			if(flak_battery_amount <= 0)
+				flak_battery_amount = 1
+		//Supercapitals are EXTREMELY hard to move, you'll find that they fight your every command, it's a side-effect of their immense power.
 		if(MASS_TITAN)
-			forward_maxthrust = 0.05
-			backward_maxthrust = 0.05
-			side_maxthrust = 0.05
-			max_angular_acceleration = 0.75
-			bounce_factor = 0.35
-			lateral_bounce_factor = 0.6
-			flak_battery_amount = 0
+			forward_maxthrust = 0.35
+			backward_maxthrust = 0.10
+			side_maxthrust = 0.10
+			max_angular_acceleration = 2.75
+			bounce_factor = 0.10// But nothing can really stop you in your tracks.
+			lateral_bounce_factor = 0.10
+			//If we've not already got a special flak battery amount set.
+			if(flak_battery_amount <= 0)
+				flak_battery_amount = 2
 
 	if(role == MAIN_OVERMAP)
 		name = "[station_name()]"
-	current_system = SSstar_system.find_system(src)
+	var/datum/star_system/sys = SSstar_system.find_system(src)
+	if(sys)
+		current_system = sys
 	addtimer(CALLBACK(src, .proc/force_parallax_update), 20 SECONDS)
 	addtimer(CALLBACK(src, .proc/check_armour), 20 SECONDS)
+
+	//Boarding / Interior bits...
+	switch(interior_mode)
+		//If we didn't get it preset, Ie, we're not a dropship
+		if(NO_INTERIOR)
+			interior_mode = (possible_interior_maps?.len) ? INTERIOR_EXCLUSIVE : NO_INTERIOR
+		//Allows small ships to have a small interior.
+		if(INTERIOR_DYNAMIC)
+			instance_interior()
 
 	apply_weapons()
 
 //Method to apply weapon types to a ship. Override to your liking, this just handles generic rules and behaviours
 /obj/structure/overmap/proc/apply_weapons()
-	weapon_types[FIRE_MODE_TORPEDO] = new/datum/ship_weapon/torpedo_launcher(src)
 	//Prevent fighters from getting access to the AMS.
 	if(mass <= MASS_TINY)
 		weapon_types[FIRE_MODE_PDC] = new /datum/ship_weapon/light_cannon(src)
@@ -330,6 +399,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 		weapon_types[FIRE_MODE_MAC] = new /datum/ship_weapon/mac(src)
 	if(ai_controlled)
 		weapon_types[FIRE_MODE_MISSILE] = new/datum/ship_weapon/missile_launcher(src)
+		weapon_types[FIRE_MODE_TORPEDO] = new/datum/ship_weapon/torpedo_launcher(src)
 	/*
 	if(mass > MASS_TINY || occupying_levels.len)
 		weapon_types[FIRE_MODE_FLAK] = new/datum/ship_weapon/flak(src)
@@ -346,6 +416,29 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 	. = ..()
 
 /obj/structure/overmap/Destroy()
+	if(current_system)
+		current_system.system_contents.Remove(src)
+		if(faction != "nanotrasen" && faction != "solgov")
+			current_system.enemies_in_system.Remove(src)
+		if(current_system.contents_positions[src])	//If we got destroyed while not loaded, chances are we should kill off this reference.
+			current_system.contents_positions.Remove(src)
+
+	STOP_PROCESSING(SSphysics_processing, src)
+	GLOB.overmap_objects -= src
+	relay('nsv13/sound/effects/ship/damage/ship_explode.ogg')
+	relay_to_nearby('nsv13/sound/effects/ship/damage/disable.ogg') //Kaboom.
+	new /obj/effect/temp_visual/fading_overmap(get_turf(src), name, icon, icon_state)
+	for(var/obj/structure/overmap/OM in enemies) //If target's in enemies, return
+		var/sound = pick('nsv13/sound/effects/computer/alarm.ogg','nsv13/sound/effects/computer/alarm_2.ogg')
+		var/message = "<span class='warning'>ATTENTION: [src]'s reactor is going supercritical. Destruction imminent.</span>"
+		OM?.tactical?.relay_sound(sound, message)
+		OM.enemies -= src //Stops AI from spamming ships that are already dead
+	overmap_explode(linked_areas)
+	if(role == MAIN_OVERMAP)
+		priority_announce("WARNING: ([rand(10,100)]) Attempts to establish DRADIS uplink with [station_name()] have failed. Unable to ascertain operational status. Presumed status: TERMINATED","Central Intelligence Unit", 'nsv13/sound/effects/ship/reactor/explode.ogg')
+		Cinematic(CINEMATIC_NSV_SHIP_KABOOM,world)
+		SSticker.mode.check_finished(TRUE)
+		SSticker.force_ending = 1
 	SEND_SIGNAL(src,COMSIG_SHIP_KILLED)
 	QDEL_LIST(current_tracers)
 	if(cabin_air)
@@ -354,7 +447,9 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 	if(physics2d)
 		qdel(physics2d)
 		physics2d = null
-	. = ..()
+	if(npc_combat_dice)
+		qdel(npc_combat_dice)
+	return ..()
 
 /obj/structure/overmap/proc/find_area()
 	if(role == MAIN_OVERMAP) //We're the hero ship, link us to every ss13 area.
@@ -371,7 +466,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 		return FALSE
 	if(weapon_safety)
 		return FALSE
-	if(target == src || istype(target, /obj/screen) || (target && (target in user.GetAllContents())) || params_list["alt"] || params_list["shift"])
+	if(target == src || istype(target, /atom/movable/screen) || (target && (target in user.GetAllContents())) || params_list["alt"] || params_list["shift"])
 		return FALSE
 	if(locate(user) in gauss_gunners) //Special case for gauss gunners here. Takes priority over them being the regular gunner.
 		var/datum/component/overmap_gunning/user_gun = user.GetComponent(/datum/component/overmap_gunning)
@@ -380,7 +475,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 	if(user != gunner)
 		if(user == pilot)
 			var/datum/ship_weapon/SW = weapon_types[FIRE_MODE_RAILGUN] //For annoying ships like whisp
-			var/list/loaded = SW.weapons["loaded"]
+			var/list/loaded = SW?.weapons["loaded"]
 			if(SW && loaded?.len)
 				fire_weapon(target, FIRE_MODE_RAILGUN)
 			else
@@ -427,7 +522,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 	relay('nsv13/sound/effects/fighters/locked.ogg', message=null, loop=FALSE, channel=CHANNEL_IMPORTANT_SHIP_ALERT)
 
 /obj/structure/overmap/proc/update_gunner_cam(atom/target)
-	var/mob/camera/aiEye/remote/overmap_observer/cam = gunner.remote_control
+	var/mob/camera/ai_eye/remote/overmap_observer/cam = gunner.remote_control
 	cam.track_target(target)
 
 /obj/structure/overmap/onMouseMove(object,location,control,params)
@@ -542,7 +637,7 @@ Proc to spool up a new Z-level for a player ship and assign it a treadmill.
 					continue
 			ship.relay(sound,message)
 
-/obj/structure/overmap/proc/verb_check(require_pilot = TRUE, mob/user = null)
+/obj/structure/overmap/proc/verb_check(mob/user, require_pilot = TRUE)
 	if(!user)
 		user = usr
 	if(user != pilot)
